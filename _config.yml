@@ -1,0 +1,12 @@
+title: Ouster LiDAR End-to-End Workflow
+description: Network Setup, Firmware Update, SDK Installation, PCAP Recording, Offline & Online SLAM, and BIM-Ready Point Cloud Export for Ouster OS0 and OS1 sensors on Ubuntu 22.04.
+theme: jekyll-theme-cayman
+show_downloads: true
+google_analytics:
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# Open Graph / social sharing
+author: Abdenour BENKRID
+lang: en
