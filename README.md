@@ -20,6 +20,8 @@ A complete, beginner-friendly, step-by-step tutorial for working with **Ouster O
 
 This guide covers the full pipeline — from connecting the sensor for the very first time to generating a BIM-ready 3D point cloud. It is designed to work transparently across multiple robotic platforms (e.g. **Clearpath Jackal**, **Boston Dynamics Spot**, or a standalone desktop) by relying on the sensor hostname rather than fragile static IP addresses.
 
+> ⚠️ **This tutorial is not a replacement for Ouster's extensive official documentation.** It is a practical shortcut to help you get up and running quickly with a working end-to-end pipeline, without spending hours digging through manuals. For in-depth specifications, advanced configuration, firmware internals, and the full API reference, always refer to the [official Ouster documentation](https://static.ouster.dev/) linked at the end of this guide.
+
 > Target use cases: robotics, indoor/outdoor mapping, digital twins, nuclear-environment surveys, and any workflow that needs a reliable offline LiDAR pipeline before — or instead of — moving to ROS 2.
 
 ---
