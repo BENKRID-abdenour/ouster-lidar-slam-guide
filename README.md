@@ -8,8 +8,7 @@
 -->
 
 <p align="center">
-  <!-- Replace the line below with your cover image -->
-  <img src="docs/cover.png" alt="Ouster LiDAR SLAM Workflow" width="100%"/>
+  <img src="docs/cover.gif" alt="Ouster LiDAR SLAM Workflow" width="100%"/>
 </p>
 
 <br/>
