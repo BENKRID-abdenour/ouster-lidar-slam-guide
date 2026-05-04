@@ -265,24 +265,31 @@ Press **Ctrl+C** to stop the recording.
 
 ## Step 6 — Run SLAM (Offline and Online)
 
-The `ouster-cli ... slam` command uses the built-in **KISS-ICP** algorithm to estimate the trajectory and fuse the point clouds into a globally consistent map.
+The `ouster-cli ... slam` command uses the built-in **KISS-ICP** algorithm to estimate the sensor trajectory and fuse the point clouds into a globally consistent map.
 
 Two input sources are supported:
 
-| Mode    | Source                        | Typical use case                           |
-|---------|-------------------------------|--------------------------------------------|
-| Offline | `capture.pcap` (+ metadata)   | Post-processing a recorded dataset         |
-| Online  | `os-XXXXXXXXXXXX.local` (live) | Real-time preview during data acquisition |
+| Mode    | Source                         | Typical use case                           |
+|---------|--------------------------------|--------------------------------------------|
+| Offline | `capture.pcap` (+ metadata)    | Post-processing a recorded dataset         |
+| Online  | `os-XXXXXXXXXXXX.local` (live) | Real-time preview during data acquisition  |
 
 ### 6.1 Parameter overview
 
-| Parameter                   | Purpose                                                             |
-|-----------------------------|---------------------------------------------------------------------|
-| `--voxel-size`              | Controls map resolution and computational load (see table below)    |
-| `--min-range` / `--max-range` | Removes points outside the useful range (flags of the `slam` sub-command) |
-| `filter REFLECTIVITY 1:1`   | Helps suppress unstable reflections on glass or shiny surfaces      |
+The full pipeline involves three families of parameters that operate at **different stages** of the processing chain. Understanding which parameter applies where is key to producing clean, reproducible results.
 
-> ⚠️ **Known issue — `filter RANGE` syntax:** The chained `filter RANGE X:Y` syntax (e.g. `filter RANGE 0.5m:20m`) **does not work** with current versions of `ouster-cli`. Use the `--min-range` and `--max-range` flags of the `slam` sub-command instead, as shown in all examples below. This has been confirmed with SDK 0.16.1.
+| Parameter                          | Stage         | Purpose                                                                                  |
+|------------------------------------|---------------|------------------------------------------------------------------------------------------|
+| `--voxel-size`                     | SLAM engine   | Controls map resolution and computational load (see table below)                         |
+| `--min-range` / `--max-range`      | SLAM engine   | Restrict the range used for ICP matching — flags of the `slam` sub-command               |
+| `filter RANGE <min>m:<max>m`       | Post-SLAM     | Remove points outside a range window from the **output** scans (cleans the saved cloud)  |
+| `filter REFLECTIVITY 1:1`          | Post-SLAM     | Drop the lowest-reflectivity points (typically noise on glass and dark surfaces)         |
+
+> 💡 **Two distinct mechanisms — do not confuse them.**
+> - `--min-range` / `--max-range` (flags of `slam`) tell the **SLAM engine** which points to *use for matching*. They protect ICP from noisy near-field returns and from far-range echoes that don't help registration.
+> - `filter RANGE` and `filter REFLECTIVITY` (separate sub-commands) tell the **pipeline** which points to *write out* in the saved/visualized cloud. They are applied **after** SLAM and do not affect pose estimation.
+>
+> Using both together is the recommended pattern for crisp maps: keep the SLAM engine well-fed with relevant returns, and clean the final cloud before saving or exporting.
 
 **Voxel-size rules of thumb** (from Ouster's official guidance):
 
@@ -302,7 +309,7 @@ Two input sources are supported:
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 0.25 \
-  --min-range 0.5 --max-range 20.0 \
+  --min-range 1.0 --max-range 30.0 \
   filter REFLECTIVITY 1:1 \
   save map_os1_indoor.osf
 ```
@@ -326,7 +333,7 @@ ouster-cli source capture.pcap slam \
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 0.30 \
-  --min-range 0.3 --max-range 20.0 \
+  --min-range 1.0 --max-range 50.0 \
   filter REFLECTIVITY 1:1 \
   save map_os0_indoor.osf
 ```
@@ -341,6 +348,10 @@ ouster-cli source capture.pcap slam \
   save map_os0_outdoor.osf
 ```
 
+> 💡 **Why `--min-range 1.0`?** Ouster's official guidance recommends discarding points closer than 1 m: bi-static LiDARs lose precision below this distance, and near-field returns from cables, mounts, or the robot chassis pollute the ICP matcher. The benefit is most visible on the OS0-128 where the dense return pattern is especially prone to self-detection.
+>
+> 💡 **Why `--max-range 50` indoor (and not 30)?** In confined indoor environments the instinct is to clip the range short, but KISS-ICP needs **distant geometric constraints** to disambiguate rotation and to lock onto consistent structure across symmetric corridors. Open doors, long hallways, and adjacent rooms all contribute valuable matching cues that a 20–30 m clip would discard. The CPU cost of going from 30 m to 50 m is negligible.
+
 ---
 
 ### 6.4 Replay a PCAP with an explicit metadata file
@@ -350,24 +361,120 @@ If the metadata JSON was not generated automatically, pass it with `--meta`:
 ```bash
 ouster-cli source --meta sensor_metadata.json capture.pcap slam \
   --voxel-size 0.25 \
-  --min-range 0.3 --max-range 20.0 \
+  --min-range 1.0 --max-range 50.0 \
   filter REFLECTIVITY 1:1 \
   save map.osf
 ```
 
-**Real-world validated example** (confirmed working with SDK 0.16.1):
+---
 
-```bash
-ouster-cli source --meta LowerWalk.json LowerWalk.pcap slam \
-  --voxel-size 0.25 \
-  --min-range 0.3 --max-range 20.0 \
-  filter REFLECTIVITY 1:1 \
-  save LowerWalk.osf
-```
+### 6.5 The complete pipeline — production example
+
+Below is a real-world, production-grade pipeline for the OS0-128 in a confined indoor environment (validated with SDK 0.16.1). It runs **three stages in a single command**: SLAM, point-cloud cleaning, and high-quality visualization, while saving the result for downstream use.
+
+This is presented in **two equivalent forms**:
+
+1. **All-in-one** — convenient for single-shot processing.
+2. **Three separate commands** — recommended for development, debugging, and re-running individual stages without recomputing the SLAM.
 
 ---
 
-### 6.5 Online SLAM (live sensor)
+#### 6.5.1 Form A — All-in-one pipeline
+
+```bash
+ouster-cli source --meta LowerWalk.json LowerWalk.pcap \
+  slam --voxel-size 0.25 --min-range 1.0 --max-range 50.0 \
+  filter RANGE 0m:1m \
+  filter REFLECTIVITY 1:1 \
+  viz --accum-num 0 --accum-every-m 0.5 \
+       --map --map-ratio 1.0 --map-size 50000000 \
+       -e stop \
+  save LowerWalk.osf
+```
+
+**What each segment does:**
+
+| Stage              | Command segment                                                                                              | Role                                                                  |
+|--------------------|--------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| 1 — SLAM           | `slam --voxel-size 0.25 --min-range 1.0 --max-range 50.0`                                                    | Run KISS-ICP on the raw scans, estimate poses                         |
+| 2 — Cleaning       | `filter RANGE 0m:1m` and `filter REFLECTIVITY 1:1`                                                           | Drop near-field noise and lowest-reflectivity points from the output  |
+| 3 — Visualization  | `viz --accum-num 0 --accum-every-m 0.5 --map --map-ratio 1.0 --map-size 50000000 -e stop`                    | Display the full map at maximum density (see notes below)             |
+| Persistence        | `save LowerWalk.osf`                                                                                         | Write the cleaned scans + poses to an OSF for later reuse             |
+
+> ⚠️ **Resource warning.** `--map-ratio 1.0` and `--map-size 50000000` together can consume **1.5–2 GB of RAM** on long indoor walks. If your workstation struggles, scale down to `--map-ratio 0.3 --map-size 15000000` (~500 MB) — the visual difference is minor and the result is still publication-grade.
+
+---
+
+#### 6.5.2 Form B — Pipeline broken down into three stages
+
+This decomposition is the **recommended workflow** during development. Each stage produces a distinct, reusable artifact, so you can iterate on cleaning or visualization without re-running the (expensive) SLAM step.
+
+##### Stage 1 — Run SLAM and persist the raw OSF
+
+```bash
+ouster-cli source --meta LowerWalk.json LowerWalk.pcap \
+  slam --voxel-size 0.25 --min-range 1.0 --max-range 50.0 \
+  save LowerWalk_raw.osf
+```
+
+**Output:** `LowerWalk_raw.osf` — full SLAM result with trajectory and unfiltered scans. This is your **archival ground truth**: keep it untouched and apply all downstream operations to copies.
+
+---
+
+##### Stage 2 — Clean the point cloud
+
+```bash
+ouster-cli source LowerWalk_raw.osf \
+  filter RANGE 0m:1m \
+  filter REFLECTIVITY 1:1 \
+  save LowerWalk_clean.osf
+```
+
+**Output:** `LowerWalk_clean.osf` — same trajectory, cleaned cloud (no points below 1 m, no `reflectivity=1` points). Use this file for visualization, analysis, and PLY export.
+
+> 💡 You can experiment with different filter thresholds (e.g. `filter RANGE 0m:2m` for a stricter near-field cut) without ever touching the SLAM step again.
+
+---
+
+##### Stage 3 — Visualize at maximum quality
+
+```bash
+ouster-cli source LowerWalk_clean.osf viz \
+  --accum-num 0 \
+  --accum-every-m 0.5 \
+  --map --map-ratio 1.0 --map-size 50000000 \
+  -e stop
+```
+
+**What you get:** the full reconstructed map, no sliding-window erasure, every point of every scan rendered into a persistent overlay.
+
+| Visualization parameter | Effect                                                                                            |
+|-------------------------|---------------------------------------------------------------------------------------------------|
+| `--accum-num 0`         | Unlimited scan accumulator — **nothing fades out** as the playback progresses                     |
+| `--accum-every-m 0.5`   | Adds a dense keyframe every 0.5 m of travel (good density for confined indoor walks)              |
+| `--map`                 | Enables the persistent overall map (random sample of every scan, kept for the entire session)     |
+| `--map-ratio 1.0`       | Send 100% of each scan's points to the persistent map (max density)                               |
+| `--map-size 50000000`   | Raise the overall map cap to 50 M points (default is 1.5 M — far too small for full walks)        |
+| `-e stop`               | Stop the viewer cleanly at end of file (no looping, no manual Ctrl+C needed)                      |
+
+##### Inside the viewer — keyboard shortcuts worth knowing
+
+The default Ouster palette is purple/orange (calibrated reflectivity), which can be hard to read. While the viewer is running:
+
+| Key   | Action                                                                                              |
+|-------|-----------------------------------------------------------------------------------------------------|
+| `m`   | Cycle the **coloring source** (range / signal / reflectivity / near-IR)                             |
+| `c`   | Cycle the **palette** of the accumulated cloud (Greyscale, Viridis, Spezia, Calibrated, etc.)       |
+| `6`   | Toggle the SCAN accumulator overlay                                                                 |
+| `7`   | Toggle the MAP overlay                                                                              |
+| `8`   | Toggle the trajectory line                                                                          |
+| `o` / `p` | Increase / decrease point size                                                                  |
+
+For a "rainbow" look similar to LIO-SAM in RViz (blue → green → yellow → orange → red), press `c` until you reach the **Spezia** or **Calibrated** palette.
+
+---
+
+### 6.6 Online SLAM (live sensor)
 
 You can also run SLAM **directly on the live stream** — useful for quick field checks:
 
@@ -380,7 +487,7 @@ Add filters and saving just like the offline case:
 ```bash
 ouster-cli source os-XXXXXXXXXXXX.local slam \
   --voxel-size 0.25 \
-  --min-range 0.5 --max-range 20.0 \
+  --min-range 1.0 --max-range 50.0 \
   filter REFLECTIVITY 1:1 \
   viz --accum-num 100 \
   save live_map.osf
@@ -388,11 +495,17 @@ ouster-cli source os-XXXXXXXXXXXX.local slam \
 
 Press **Ctrl+C** (or close the viewer) to stop.
 
+> ⚠️ Heavy visualization options (`--map-ratio 1.0`, `--accum-num 0`) are **not recommended** in online mode — they compete with the SLAM engine for CPU and may drop packets. Keep online sessions lean and reserve maximum-quality rendering for offline replay.
+
 ---
 
 ## Step 7 — Visualize the Reconstructed Map
 
-Before exporting, validate the trajectory and map quality:
+There are two visualization profiles, depending on what you need.
+
+### 7.1 Quick preview — validate the trajectory
+
+A light, GPU-friendly preview to confirm that the SLAM converged and the map looks coherent:
 
 ```bash
 ouster-cli source map_os0_indoor.osf viz \
@@ -404,30 +517,68 @@ ouster-cli source map_os0_indoor.osf viz \
 
 **Why this configuration:**
 
-- `--accum-num 20` — accumulates 20 scans for a dense display without overloading the GPU
-- `--accum-every-m 2.0` — adds a new accumulated scan every 2 metres of travel, giving a clean global map view
-- `--map` — enables the full map overlay (all scans), so you see the complete reconstructed environment
-- `-e stop` — automatically stops the viewer when the OSF file ends, no need to press Ctrl+C
+- `--accum-num 20` — 20 dense keyframes in a sliding window (cheap on the GPU)
+- `--accum-every-m 2.0` — one keyframe every 2 m of travel
+- `--map` — keeps a persistent map overlay so the global structure stays visible
+- `-e stop` — exits cleanly at end of file
 
-> Avoid aggressive settings such as very large `--map-size` or high `--map-ratio` values unless you specifically need them for close inspection and your workstation has sufficient graphics memory.
+This profile is fast to launch and well-suited to checking dozens of recordings in succession.
+
+### 7.2 Maximum quality — final inspection and screenshots
+
+When you need the densest possible rendering for inspection, screenshots, or stakeholder demos:
+
+```bash
+ouster-cli source map_os0_indoor.osf viz \
+  --accum-num 0 \
+  --accum-every-m 0.5 \
+  --map --map-ratio 1.0 --map-size 50000000 \
+  -e stop
+```
+
+This is the same configuration as Stage 3 of the production pipeline (Section 6.5.2). Expect 1.5–2 GB of RAM on long indoor walks.
+
+> 💡 **Tip — palettes for crisp visuals.** Inside the viewer, press `c` to cycle palettes. **Spezia** and **Calibrated** give a familiar blue→green→yellow→red gradient that resembles LIO-SAM/RViz output and is generally easier to read than the default purple.
 
 ---
 
 ## Step 8 — Export a BIM-Ready Point Cloud
 
-Once the SLAM result is validated, export the map as a `.ply` point cloud:
+Once the SLAM result is validated, export the cleaned map as a `.ply` point cloud. The `save` command detects the output format from the file extension.
+
+**Export from the cleaned OSF (recommended):**
 
 ```bash
-ouster-cli source map_os0_indoor.osf convert final_map.ply
+ouster-cli source LowerWalk_clean.osf \
+  save final_map.ply
 ```
+
+**Export with cleaning applied on the fly** (if you only have the raw OSF):
+
+```bash
+ouster-cli source LowerWalk_raw.osf \
+  filter RANGE 0m:1m \
+  filter REFLECTIVITY 1:1 \
+  save final_map.ply
+```
+
+> 💡 **Range clipping for export.** To restrict the export to a useful range window (e.g. drop everything beyond 50 m for a focused indoor scene), use the `clip` command:
+>
+> ```bash
+> ouster-cli source LowerWalk_clean.osf \
+>   clip RANGE,RANGE2 1m:50m \
+>   save final_map_clipped.ply
+> ```
 
 The resulting file can be opened or post-processed in:
 
-- **CloudCompare**
-- **Open3D**
-- **MeshLab**
-- **Blender**
-- Any BIM / digital twin processing pipeline (Revit, Navisworks, Autodesk ReCap, etc.)
+- **CloudCompare** — measurement, segmentation, registration, EDL rendering
+- **Open3D** — Python-based processing and meshing
+- **MeshLab** — cleaning, decimation, surface reconstruction
+- **Blender** — artistic rendering and animation
+- Any BIM / digital twin pipeline (Revit, Navisworks, Autodesk ReCap, etc.)
+
+> 💡 For publication-grade screenshots, **CloudCompare with Eye Dome Lighting (EDL)** enabled and a Blue→Green→Yellow→Red color ramp on the Z coordinate produces results comparable to professional surveying software.
 
 ---
 
@@ -435,16 +586,18 @@ The resulting file can be opened or post-processed in:
 
 | Sensor   | Environment | Voxel size | `--min-range` | `--max-range` | Expected result                        |
 |----------|-------------|------------|---------------|---------------|----------------------------------------|
-| OS1-64   | Indoor      | 0.25       | 0.5 m         | 20 m          | High-detail mapping                    |
+| OS1-64   | Indoor      | 0.25       | 1.0 m         | 30 m          | High-detail mapping                    |
 | OS1-64   | Outdoor     | 0.80       | 1.0 m         | 100 m         | Stable large-scale mapping             |
-| OS0-128  | Indoor      | 0.30       | 0.3 m         | 20 m          | Dense indoor reconstruction            |
+| OS0-128  | Indoor      | 0.30       | 1.0 m         | 50 m          | Dense indoor reconstruction            |
 | OS0-128  | Outdoor     | 1.00       | 1.0 m         | 50 m          | Efficient short-range outdoor mapping  |
+
+> The `--min-range 1.0` baseline reflects Ouster's official guidance for bi-static LiDARs. The OS0-128 indoor `--max-range` is set to 50 m (rather than the OS1-64's 30 m) because the OS0's wider vertical FoV captures more useful long-range structure in indoor multi-room layouts.
 
 ---
 
 ## Monitor System Resources
 
-SLAM can be computationally heavy, especially with dense OS0-128 datasets.
+SLAM and high-density visualization can be computationally heavy, especially with dense OS0-128 datasets.
 
 ```bash
 btop
@@ -454,12 +607,12 @@ htop
 
 Watch closely:
 
-- **RAM usage**
-- **Swap usage**
-- **CPU saturation**
-- **Disk throughput**
+- **RAM usage** — heavy `--map-ratio` settings can push past 2 GB
+- **Swap usage** — should remain near zero; growing swap means you need a larger voxel or smaller map
+- **CPU saturation** — sustained 100% on a single core indicates KISS-ICP is the bottleneck
+- **Disk throughput** — relevant during recording and OSF writing
 
-> If swap usage starts growing significantly, stop the process (**Ctrl+C**) and rerun with a **larger `--voxel-size`**.
+> If swap usage starts growing significantly, stop the process (**Ctrl+C**) and rerun with a **larger `--voxel-size`**, a smaller `--map-ratio`, or a tighter `--max-range`.
 
 ---
 
@@ -474,7 +627,8 @@ ouster_project/
 │   ├── capture.pcap
 │   └── capture.json
 ├── maps/
-│   ├── map_os1_indoor.osf
+│   ├── LowerWalk_raw.osf
+│   ├── LowerWalk_clean.osf
 │   └── map_os0_outdoor.osf
 └── exports/
     └── final_map.ply
