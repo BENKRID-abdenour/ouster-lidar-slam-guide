@@ -279,8 +279,10 @@ Two input sources are supported:
 | Parameter                   | Purpose                                                             |
 |-----------------------------|---------------------------------------------------------------------|
 | `--voxel-size`              | Controls map resolution and computational load (see table below)    |
-| `filter RANGE X:Y`          | Removes points outside the useful range                             |
+| `--min-range` / `--max-range` | Removes points outside the useful range (flags of the `slam` sub-command) |
 | `filter REFLECTIVITY 1:1`   | Helps suppress unstable reflections on glass or shiny surfaces      |
+
+> ⚠️ **Known issue — `filter RANGE` syntax:** The chained `filter RANGE X:Y` syntax (e.g. `filter RANGE 0.5m:20m`) **does not work** with current versions of `ouster-cli`. Use the `--min-range` and `--max-range` flags of the `slam` sub-command instead, as shown in all examples below. This has been confirmed with SDK 0.16.1.
 
 **Voxel-size rules of thumb** (from Ouster's official guidance):
 
@@ -300,7 +302,7 @@ Two input sources are supported:
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 0.25 \
-  filter RANGE 0.5m:20m \
+  --min-range 0.5 --max-range 20.0 \
   filter REFLECTIVITY 1:1 \
   save map_os1_indoor.osf
 ```
@@ -310,7 +312,7 @@ ouster-cli source capture.pcap slam \
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 0.8 \
-  filter RANGE 1.0m:100m \
+  --min-range 1.0 --max-range 100.0 \
   filter REFLECTIVITY 1:1 \
   save map_os1_outdoor.osf
 ```
@@ -324,7 +326,7 @@ ouster-cli source capture.pcap slam \
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 0.30 \
-  filter RANGE 0.3m:20m \
+  --min-range 0.3 --max-range 20.0 \
   filter REFLECTIVITY 1:1 \
   save map_os0_indoor.osf
 ```
@@ -334,7 +336,7 @@ ouster-cli source capture.pcap slam \
 ```bash
 ouster-cli source capture.pcap slam \
   --voxel-size 1.0 \
-  filter RANGE 1.0m:50m \
+  --min-range 1.0 --max-range 50.0 \
   filter REFLECTIVITY 1:1 \
   save map_os0_outdoor.osf
 ```
@@ -348,9 +350,19 @@ If the metadata JSON was not generated automatically, pass it with `--meta`:
 ```bash
 ouster-cli source --meta sensor_metadata.json capture.pcap slam \
   --voxel-size 0.25 \
-  filter RANGE 0.5m:20m \
+  --min-range 0.3 --max-range 20.0 \
   filter REFLECTIVITY 1:1 \
   save map.osf
+```
+
+**Real-world validated example** (confirmed working with SDK 0.16.1):
+
+```bash
+ouster-cli source --meta LowerWalk.json LowerWalk.pcap slam \
+  --voxel-size 0.25 \
+  --min-range 0.3 --max-range 20.0 \
+  filter REFLECTIVITY 1:1 \
+  save LowerWalk.osf
 ```
 
 ---
@@ -368,7 +380,7 @@ Add filters and saving just like the offline case:
 ```bash
 ouster-cli source os-XXXXXXXXXXXX.local slam \
   --voxel-size 0.25 \
-  filter RANGE 0.5m:20m \
+  --min-range 0.5 --max-range 20.0 \
   filter REFLECTIVITY 1:1 \
   viz --accum-num 100 \
   save live_map.osf
@@ -390,7 +402,12 @@ ouster-cli source map_os0_indoor.osf viz \
   -e stop
 ```
 
-**Why this configuration:** it provides a clear global view of the reconstructed environment without overloading the GPU or system memory.
+**Why this configuration:**
+
+- `--accum-num 20` — accumulates 20 scans for a dense display without overloading the GPU
+- `--accum-every-m 2.0` — adds a new accumulated scan every 2 metres of travel, giving a clean global map view
+- `--map` — enables the full map overlay (all scans), so you see the complete reconstructed environment
+- `-e stop` — automatically stops the viewer when the OSF file ends, no need to press Ctrl+C
 
 > Avoid aggressive settings such as very large `--map-size` or high `--map-ratio` values unless you specifically need them for close inspection and your workstation has sufficient graphics memory.
 
@@ -416,12 +433,12 @@ The resulting file can be opened or post-processed in:
 
 ## Recommended Settings Summary
 
-| Sensor   | Environment | Voxel size | Range filter   | Expected result                        |
-|----------|-------------|------------|----------------|----------------------------------------|
-| OS1-64   | Indoor      | 0.25       | 0.5 m – 20 m   | High-detail mapping                    |
-| OS1-64   | Outdoor     | 0.80       | 1.0 m – 100 m  | Stable large-scale mapping             |
-| OS0-128  | Indoor      | 0.30       | 0.3 m – 20 m   | Dense indoor reconstruction            |
-| OS0-128  | Outdoor     | 1.00       | 1.0 m – 50 m   | Efficient short-range outdoor mapping  |
+| Sensor   | Environment | Voxel size | `--min-range` | `--max-range` | Expected result                        |
+|----------|-------------|------------|---------------|---------------|----------------------------------------|
+| OS1-64   | Indoor      | 0.25       | 0.5 m         | 20 m          | High-detail mapping                    |
+| OS1-64   | Outdoor     | 0.80       | 1.0 m         | 100 m         | Stable large-scale mapping             |
+| OS0-128  | Indoor      | 0.30       | 0.3 m         | 20 m          | Dense indoor reconstruction            |
+| OS0-128  | Outdoor     | 1.00       | 1.0 m         | 50 m          | Efficient short-range outdoor mapping  |
 
 ---
 
