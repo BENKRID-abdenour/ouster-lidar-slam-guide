@@ -1,12 +1,3 @@
-<!--
-====================================================================
-  COVER IMAGE PLACEHOLDER
-  Drop your cover image here. Recommended size: 1600 x 500 px.
-  Example:
-  ![Cover](docs/cover.png)
-====================================================================
--->
-
 <p align="center">
   <img src="docs/cover.gif" alt="Ouster LiDAR SLAM Workflow" width="100%"/>
 </p>
