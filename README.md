@@ -14,11 +14,11 @@
 <br/>
 
 # Ouster LiDAR End-to-End Workflow
-### Network Setup, Firmware Update, SDK Installation, PCAP Recording, Offline & Online SLAM, and BIM-Ready Point Cloud Export
+### Network Setup, Firmware Update, SDK Installation, PCAP Recording, Offline & Online SLAM, BIM-Ready Point Cloud Export, and Publication-Grade Rendering
 
 A complete, beginner-friendly, step-by-step tutorial for working with **Ouster OS1 and OS0 LiDAR sensors** on **Ubuntu 22.04** using the **Ouster SDK**.
 
-This guide covers the full pipeline — from connecting the sensor for the very first time to generating a BIM-ready 3D point cloud. It is designed to work transparently across multiple robotic platforms (e.g. **Clearpath Jackal**, **Boston Dynamics Spot**, or a standalone desktop) by relying on the sensor hostname rather than fragile static IP addresses.
+This guide covers the full pipeline — from connecting the sensor for the very first time to producing a publication-grade 3D point cloud rendering. It is designed to work transparently across multiple robotic platforms (e.g. **Clearpath Jackal**, **Boston Dynamics Spot**, or a standalone desktop) by relying on the sensor hostname rather than fragile static IP addresses.
 
 > ⚠️ **This tutorial is not a replacement for Ouster's extensive official documentation.** It is a practical shortcut to help you get up and running quickly with a working end-to-end pipeline, without spending hours digging through manuals. For in-depth specifications, advanced configuration, firmware internals, and the full API reference, always refer to the [official Ouster documentation](https://static.ouster.dev/) linked at the end of this guide.
 
@@ -38,11 +38,12 @@ This guide covers the full pipeline — from connecting the sensor for the very 
 8. [Step 6 — Run SLAM (Offline and Online)](#step-6--run-slam-offline-and-online)
 9. [Step 7 — Visualize the Reconstructed Map](#step-7--visualize-the-reconstructed-map)
 10. [Step 8 — Export a BIM-Ready Point Cloud](#step-8--export-a-bim-ready-point-cloud)
-11. [Recommended Settings Summary](#recommended-settings-summary)
-12. [Monitor System Resources](#monitor-system-resources)
-13. [Project Structure](#project-structure)
-14. [Official Resources](#official-resources)
-15. [License](#license)
+11. [Step 9 — Render the Point Cloud in CloudCompare (LIO-SAM Look)](#step-9--render-the-point-cloud-in-cloudcompare-lio-sam-look)
+12. [Recommended Settings Summary](#recommended-settings-summary)
+13. [Monitor System Resources](#monitor-system-resources)
+14. [Project Structure](#project-structure)
+15. [Official Resources](#official-resources)
+16. [License](#license)
 
 ---
 
@@ -57,6 +58,7 @@ This guide covers the full pipeline — from connecting the sensor for the very 
 - **Python 3.8 – 3.13**
 - **Ouster SDK 0.16.1**
 - (Optional) **ROS 2 Humble** for downstream integration
+- (Optional) **CloudCompare 2.13+** for publication-grade rendering
 
 > Throughout this guide, replace `<SENSOR_HOSTNAME>` with the hostname of your sensor (see Step 1). Anywhere you see `os-XXXXXXXXXXXX.local`, substitute your own 12-digit serial number.
 
@@ -65,7 +67,7 @@ This guide covers the full pipeline — from connecting the sensor for the very 
 ## Workflow Overview
 
 ```text
-Network Setup → Firmware → SDK → Metadata → PCAP → SLAM → OSF → Visualization → PLY Export
+Network Setup → Firmware → SDK → Metadata → PCAP → SLAM → OSF → Visualization → PLY Export → CloudCompare Rendering
 ```
 
 1. Connect to the sensor (IP vs. hostname)
@@ -74,8 +76,9 @@ Network Setup → Firmware → SDK → Metadata → PCAP → SLAM → OSF → Vi
 4. Retrieve sensor metadata
 5. Record a `.pcap` dataset
 6. Run SLAM (offline from PCAP or online from the live sensor)
-7. Visualize the result
+7. Visualize the result in the Ouster viewer
 8. Export a `.ply` point cloud for BIM / digital twin workflows
+9. Render the cloud in CloudCompare with a LIO-SAM-style color ramp
 
 ---
 
@@ -259,7 +262,7 @@ Press **Ctrl+C** to stop the recording.
 - Move the robot **slowly and smoothly** during acquisition — avoid sharp yaws.
 - Prefer trajectories with **clear loop overlap** for better SLAM convergence.
 - Use **Gigabit Ethernet**, especially for the OS0-128 (higher packet rate).
-- Monitor CPU, RAM, and disk I/O during recording (see [Section 12](#monitor-system-resources)).
+- Monitor CPU, RAM, and disk I/O during recording (see [Section 13](#monitor-system-resources)).
 
 ---
 
@@ -544,16 +547,19 @@ This is the same configuration as Stage 3 of the production pipeline (Section 6.
 
 ## Step 8 — Export a BIM-Ready Point Cloud
 
-Once the SLAM result is validated, export the cleaned map as a `.ply` point cloud. The `save` command detects the output format from the file extension.
+Once the SLAM result is validated, export the cleaned map as a `.ply` point cloud. The `save` command automatically detects the output format from the file extension.
 
-**Export from the cleaned OSF (recommended):**
+### 8.1 Standard export (recommended)
+
+If you followed the three-stage workflow in Section 6.5.2, your `LowerWalk_clean.osf` already contains the filtered point cloud. **Do not re-apply the filters** — they would only add CPU overhead without changing the result:
 
 ```bash
-ouster-cli source LowerWalk_clean.osf \
-  save final_map.ply
+ouster-cli source LowerWalk_clean.osf save final_map.ply
 ```
 
-**Export with cleaning applied on the fly** (if you only have the raw OSF):
+### 8.2 Export with cleaning applied on the fly
+
+If you only have the raw OSF (no cleaning step performed yet), apply the filters during export:
 
 ```bash
 ouster-cli source LowerWalk_raw.osf \
@@ -562,23 +568,129 @@ ouster-cli source LowerWalk_raw.osf \
   save final_map.ply
 ```
 
-> 💡 **Range clipping for export.** To restrict the export to a useful range window (e.g. drop everything beyond 50 m for a focused indoor scene), use the `clip` command:
->
-> ```bash
-> ouster-cli source LowerWalk_clean.osf \
->   clip RANGE,RANGE2 1m:50m \
->   save final_map_clipped.ply
-> ```
+### 8.3 Export with a tighter range window
+
+To restrict the export to a useful range window (for example, drop everything beyond 50 m for a focused indoor scene), use the `clip` command:
+
+```bash
+ouster-cli source LowerWalk_clean.osf \
+  clip RANGE,RANGE2 1m:50m \
+  save final_map_clipped.ply
+```
+
+### 8.4 What's inside the PLY
+
+The exported PLY contains per-point geometry plus several scalar attributes that CloudCompare and other tools can use for coloring:
+
+| Attribute      | Description                                                                  |
+|----------------|------------------------------------------------------------------------------|
+| `x, y, z`      | 3D position in the SLAM world frame (metres)                                 |
+| `intensity`    | Raw signal intensity                                                         |
+| `reflectivity` | Calibrated reflectivity (0–255)                                              |
+| `range`        | Distance from the sensor at the time of capture                              |
+
+> 💡 No RGB colors are written to the PLY — colors are computed downstream from one of the scalar fields. See [Step 9](#step-9--render-the-point-cloud-in-cloudcompare-lio-sam-look) for the full rendering recipe.
 
 The resulting file can be opened or post-processed in:
 
-- **CloudCompare** — measurement, segmentation, registration, EDL rendering
+- **CloudCompare** — measurement, segmentation, registration, EDL rendering (covered in Step 9)
 - **Open3D** — Python-based processing and meshing
 - **MeshLab** — cleaning, decimation, surface reconstruction
 - **Blender** — artistic rendering and animation
 - Any BIM / digital twin pipeline (Revit, Navisworks, Autodesk ReCap, etc.)
 
-> 💡 For publication-grade screenshots, **CloudCompare with Eye Dome Lighting (EDL)** enabled and a Blue→Green→Yellow→Red color ramp on the Z coordinate produces results comparable to professional surveying software.
+---
+
+## Step 9 — Render the Point Cloud in CloudCompare (LIO-SAM Look)
+
+The PLY produced in Step 8 contains raw geometry and per-point attributes — but **no RGB colors**. CloudCompare must generate the coloring locally from one of the scalar fields. This step shows how to obtain the **blue → green → yellow → orange → red** rendering familiar from LIO-SAM and most SLAM publications, suitable for reports and presentations.
+
+### 9.1 Install CloudCompare
+
+```bash
+sudo snap install cloudcompare
+```
+
+Or, for the latest stable release, download the AppImage from [https://www.cloudcompare.org/release/](https://www.cloudcompare.org/release/).
+
+### 9.2 Choose the right scalar field for your rendering goal
+
+| Goal                                          | Scalar field      | Resulting look                                       |
+|-----------------------------------------------|-------------------|------------------------------------------------------|
+| **LIO-SAM / RViz "rainbow" look**             | `Coord. Z`        | Floor blue, walls green/yellow, ceiling orange/red   |
+| **Reflectivity emphasis** (signage, markings) | `reflectivity`    | Bright = reflective surfaces (signs, retroreflectors)|
+| **Intensity** (classic LiDAR look)            | `intensity`       | Surface brightness, similar to grayscale photography |
+| **Range from sensor**                         | `range`           | Distance gradient from trajectory                    |
+
+For comparing your map against a LIO-SAM map, **always use `Coord. Z`** — that is the field LIO-SAM colors by default in RViz.
+
+### 9.3 Open the PLY and apply the rainbow palette
+
+1. **Open the file**: `File → Open → final_map.ply`
+2. **Select the cloud** in the DB Tree (left panel) by clicking on it
+3. **Activate the Z scalar field**:
+   - In the Properties panel (bottom-left), find **Scalar Fields**
+   - Click **Add scalar field from coordinate**, then choose **Z**
+   - Set the new field as **active** (radio button next to its name)
+4. **Apply the rainbow color ramp**:
+   - Properties panel → **Color Scale** dropdown
+   - Choose **Blue > Green > Yellow > Red** (this is the LIO-SAM/RViz default)
+   - Alternatives that work well: **Viridis**, **High contrast**, **Rainbow**
+5. **Adjust the value range** (optional but recommended):
+   - Click the small **edit button** next to the scalar field name
+   - Set min/max manually to match your scene height (e.g. 0.0 to 3.0 for a typical indoor walk)
+   - This prevents outlier points (high ceiling fixtures, ground noise) from compressing the gradient
+
+### 9.4 Activate Eye Dome Lighting (EDL) — the secret to a 3D look
+
+Without EDL, point clouds look flat. EDL adds shading at depth discontinuities, producing the crisp 3D effect seen in professional surveying software.
+
+- Top toolbar → **Display → Shaders & Filters → EDL Shader**
+- Or keyboard shortcut: **Shift + L**
+
+EDL works on top of any color ramp and is what makes the difference between a "nice screenshot" and a "publication-grade screenshot".
+
+### 9.5 Quick rendering tweaks
+
+| Adjustment            | Where                                                    | Recommended value                                            |
+|-----------------------|----------------------------------------------------------|--------------------------------------------------------------|
+| Point size            | Properties → **Point size**                              | 2–3 (1 looks too sparse)                                     |
+| Background color      | **Display → Display settings → Colors → Background**     | White or very dark grey                                      |
+| Camera projection     | Top toolbar → **Orthographic / Perspective** toggle      | Orthographic for top-down maps, perspective for walkthroughs |
+| Light direction       | **Display → Light & materials**                          | Default is fine with EDL on                                  |
+
+### 9.6 Export a publication-ready screenshot
+
+1. Position the camera (rotate, pan, zoom) to frame the area of interest
+2. **File → Save viewport as image**
+3. Choose:
+   - **Resolution**: 3840 × 2160 (4K) for deliverables, 1920 × 1080 for slides
+   - **Zoom factor**: 2× or 3× for crisp anti-aliasing
+   - Format: **PNG** (lossless, best for documents)
+
+### 9.7 Compare your Ouster map against a LIO-SAM map
+
+To compare your Ouster KISS-ICP map against a LIO-SAM map of the same scene:
+
+1. Load both PLY files in the same CloudCompare session
+2. Apply identical settings to both: same scalar field (`Coord. Z`), same color ramp (Blue > Green > Yellow > Red), same min/max range, EDL on
+3. Use **Tools → Registration → Align (point pairs picking)** if the two maps are in different coordinate frames
+4. For quantitative comparison: **Tools → Distances → Cloud/cloud distance** computes per-point error against a reference cloud, with a built-in colored histogram
+
+> 💡 **Tip — keep colors consistent across screenshots.** When generating a series of screenshots for a report, save the CloudCompare session (`File → Save session`) so the exact color ramp, EDL settings, and camera position can be reloaded. This guarantees visual consistency across your figures.
+
+### 9.8 Optional — automated rendering from the command line
+
+For batch processing (multiple PLY files, identical rendering), CloudCompare exposes a non-interactive command-line interface. A minimal example to apply the Z-height rainbow ramp and export a PNG without opening the GUI:
+
+```bash
+CloudCompare -SILENT \
+  -O final_map.ply \
+  -SF_GRADIENT BGYR 0.0 3.0 \
+  -SS PNG -RENDER_TO_FILE screenshot.png 1920 1080
+```
+
+Refer to the [CloudCompare command-line documentation](https://www.cloudcompare.org/doc/wiki/index.php?title=Command_line_mode) for the full flag reference.
 
 ---
 
@@ -630,8 +742,10 @@ ouster_project/
 │   ├── LowerWalk_raw.osf
 │   ├── LowerWalk_clean.osf
 │   └── map_os0_outdoor.osf
-└── exports/
-    └── final_map.ply
+├── exports/
+│   └── final_map.ply
+└── renders/
+    └── final_map_4k.png
 ```
 
 ---
@@ -644,6 +758,7 @@ ouster_project/
 | `.json`   | Sensor metadata                                    |
 | `.osf`    | SLAM result with trajectory and fused point cloud  |
 | `.ply`    | Exported point cloud for BIM / post-processing     |
+| `.png`    | Publication-ready screenshot from CloudCompare     |
 
 ---
 
@@ -655,6 +770,8 @@ ouster_project/
 - [Ouster HTTP API Reference](https://static.ouster.dev/sensor-docs/image_route1/image_route2/common_sections/API/http-api-v1.html)
 - [Ouster Community Forum](https://community.ouster.com/)
 - [Optimal Sensor and SLAM Configuration for "Crisp" Mapping — Ouster Blog](https://ouster.com/insights/blog/sensor-config-for-crisp-mapping)
+- [CloudCompare Documentation](https://www.cloudcompare.org/doc/wiki/index.php)
+- [CloudCompare Command-Line Mode](https://www.cloudcompare.org/doc/wiki/index.php?title=Command_line_mode)
 
 ---
 
