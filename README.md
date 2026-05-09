@@ -25,16 +25,17 @@ This guide covers the full pipeline — from connecting the sensor for the very 
 4. [Step 2 — Update the Firmware](#step-2--update-the-firmware)
 5. [Step 3 — Install the Ouster SDK](#step-3--install-the-ouster-sdk)
 6. [Step 4 — Retrieve Sensor Metadata](#step-4--retrieve-sensor-metadata)
-7. [Step 5 — Record a PCAP Dataset](#step-5--record-a-pcap-dataset)
-8. [Step 6 — Run SLAM (Offline and Online)](#step-6--run-slam-offline-and-online)
-9. [Step 7 — Visualize the Reconstructed Map](#step-7--visualize-the-reconstructed-map)
-10. [Step 8 — Export a BIM-Ready Point Cloud](#step-8--export-a-bim-ready-point-cloud)
-11. [Step 9 — Render the Point Cloud in CloudCompare (LIO-SAM Look)](#step-9--render-the-point-cloud-in-cloudcompare-lio-sam-look)
-12. [Recommended Settings Summary](#recommended-settings-summary)
-13. [Monitor System Resources](#monitor-system-resources)
-14. [Project Structure](#project-structure)
-15. [Official Resources](#official-resources)
-16. [License](#license)
+7. [Step 4.5 — Configure the Sensor `lidar_mode` for SLAM](#step-45--configure-the-sensor-lidar_mode-for-slam)
+8. [Step 5 — Record a PCAP Dataset](#step-5--record-a-pcap-dataset)
+9. [Step 6 — Run SLAM (Offline and Online)](#step-6--run-slam-offline-and-online)
+10. [Step 7 — Visualize the Reconstructed Map](#step-7--visualize-the-reconstructed-map)
+11. [Step 8 — Export a BIM-Ready Point Cloud](#step-8--export-a-bim-ready-point-cloud)
+12. [Step 9 — Render the Point Cloud in CloudCompare (LIO-SAM Look)](#step-9--render-the-point-cloud-in-cloudcompare-lio-sam-look)
+13. [Recommended Settings Summary](#recommended-settings-summary)
+14. [Monitor System Resources](#monitor-system-resources)
+15. [Project Structure](#project-structure)
+16. [Official Resources](#official-resources)
+17. [License](#license)
 
 ---
 
@@ -58,13 +59,14 @@ This guide covers the full pipeline — from connecting the sensor for the very 
 ## Workflow Overview
 
 ```text
-Network Setup → Firmware → SDK → Metadata → PCAP → SLAM → OSF → Visualization → PLY Export → CloudCompare Rendering
+Network Setup → Firmware → SDK → Metadata → **lidar_mode Config** → PCAP → SLAM → OSF → Visualization → PLY Export → CloudCompare Rendering
 ```
 
 1. Connect to the sensor (IP vs. hostname)
 2. Update the firmware
 3. Install and verify the Ouster SDK
 4. Retrieve sensor metadata
+4.5. Configure `lidar_mode` for SLAM (one-time persistent setting)
 5. Record a `.pcap` dataset
 6. Run SLAM (offline from PCAP or online from the live sensor)
 7. Visualize the result in the Ouster viewer
@@ -228,6 +230,92 @@ Or open it directly in a browser:
 ```text
 http://os-XXXXXXXXXXXX.local/api/v1/sensor/metadata
 ```
+
+---
+
+
+---
+
+## Step 4.5 — Configure the Sensor `lidar_mode` for SLAM
+
+> ⚠️ **Do this once before your first PCAP recording.** The configuration is persistent (stored in the sensor's flash memory) and survives power cycles. You do **not** need to repeat it every session.
+
+### Why `lidar_mode` matters for SLAM
+
+The `lidar_mode` parameter controls two things simultaneously:
+- **Horizontal resolution** — the number of azimuth columns per full rotation (512 / 1024 / 2048)
+- **Rotation frequency** — how many full rotations per second the scanner performs (10 Hz or 20 Hz)
+
+| Mode | Resolution | Frequency | Points/scan | Best for |
+|------|-----------|-----------|-------------|----------|
+| `512x10` | Low | 10 Hz | 32 768 | Debug / bandwidth-limited |
+| `512x20` | Low | 20 Hz | 32 768 | Debug / high-speed robot |
+| `1024x10` | Medium | 10 Hz | 65 536 | Default factory setting |
+| `1024x20` | Medium | 20 Hz | 65 536 | Fast robot — robustness over accuracy |
+| **`2048x10`** | **Maximum** | **10 Hz** | **131 072** | **SLAM — recommended for both sensors** |
+
+> **`2048x10` is the maximum supported mode on both the OS0-128 Rev7 and the OS1-64 Rev6.** The mode `4096x5` exists only on Rev7 OS1 sensors and is **not available** on your hardware.
+
+---
+
+### Understanding the resolution / frequency trade-off
+
+**`2048x10` — maximum resolution, 10 Hz (recommended for SLAM)**
+
+- 2048 azimuth columns → the horizontal pixel is **2× smaller** than in `1024x10`
+- A smaller pixel means the scanner captures finer details: thin pipes, door frames, narrow corridors
+- At 10 Hz, the robot must move slowly — ICP has more time to match consecutive dense scans
+- Produces the **crispest, most detailed maps**
+
+**`1024x20` — reduced resolution, 20 Hz (fallback for fast-moving robots)**
+
+- 1024 columns → horizontal pixel **2× larger** than in `2048x10`
+- At 20 Hz the scanner produces **twice as many scans per second**
+- Why does this help? If the robot moves fast, the sensor translates significantly between two consecutive 10 Hz scans — the ICP matcher sees apparent **motion blur** and struggles to align them. Doubling the scan rate halves the inter-scan displacement, making ICP more robust
+- **Cost**: horizontal spatial resolution is halved → less fine detail in the final map
+
+> **Rule of thumb:**
+> - Slow robot (Spot walking, Jackal at crawl speed) → **`2048x10`**
+> - Fast robot or vibrating platform → `1024x20`
+> - When in doubt → **`2048x10`** is the default recommendation from Ouster
+
+---
+
+### Which sensor to use indoors vs. outdoors?
+
+| Sensor | FoV vertical | Channels | Max range | Recommended environment |
+|--------|-------------|----------|-----------|------------------------|
+| **OS0-128 Rev7** | **90°** | 128 | ~50 m | **Indoor** — wide vertical FoV captures floors, walls, and ceilings simultaneously; 128 channels deliver very dense point clouds in confined spaces |
+| **OS1-64 Rev6** | 45° | 64 | 170 m | **Outdoor** — long range and finer beam collimation for large-scale mapping over tens to hundreds of metres |
+
+> The OS0's 90° vertical FoV is ideal for navigating corridors and multi-room layouts (D&D inspection, BIM capture). The OS1's 170 m range makes it the right choice for outdoor environments where you need to capture structure at distance.
+
+---
+
+### Configure both sensors — one-time persistent command
+
+Run each command **once**. The `-p` flag writes the setting to the sensor's non-volatile flash memory — it will survive reboots and power cycles.
+
+```bash
+# OS0-128 Rev7 — indoor sensor
+ouster-cli source <HOSTNAME_OS0> config -p lidar_mode 2048x10
+
+# OS1-64 Rev6 — outdoor sensor
+ouster-cli source <HOSTNAME_OS1> config -p lidar_mode 2048x10
+```
+
+Replace `<HOSTNAME_OS0>` and `<HOSTNAME_OS1>` with your sensor hostnames (e.g. `os-122300001234.local`).
+
+> ⚠️ **If your ROS 2 launch file specifies a `lidar_mode` parameter explicitly, it will override the persistent setting at each launch.** Make sure the value in your launch file matches `2048x10` — or remove it entirely so the driver uses the persisted value.
+
+**Verify the configuration was applied:**
+
+```bash
+# Should return "lidar_mode": "2048x10" for each sensor
+curl "http://<HOSTNAME_OS0>/api/v1/sensor/config" | python3 -m json.tool | grep lidar_mode
+curl "http://<HOSTNAME_OS1>/api/v1/sensor/config" | python3 -m json.tool | grep lidar_mode
+```
+
 
 ---
 
@@ -687,12 +775,31 @@ Refer to the [CloudCompare command-line documentation](https://www.cloudcompare.
 
 ## Recommended Settings Summary
 
-| Sensor   | Environment | Voxel size | `--min-range` | `--max-range` | Expected result                        |
-|----------|-------------|------------|---------------|---------------|----------------------------------------|
-| OS1-64   | Indoor      | 0.25       | 1.0 m         | 30 m          | High-detail mapping                    |
-| OS1-64   | Outdoor     | 0.80       | 1.0 m         | 100 m         | Stable large-scale mapping             |
-| OS0-128  | Indoor      | 0.30       | 1.0 m         | 50 m          | Dense indoor reconstruction            |
-| OS0-128  | Outdoor     | 1.00       | 1.0 m         | 50 m          | Efficient short-range outdoor mapping  |
+### Sensor selection — indoor vs. outdoor
+
+| Sensor | Recommended environment | FoV vertical | Channels | Max range | Reason |
+|--------|------------------------|-------------|----------|-----------|--------|
+| **OS0-128 Rev7** | **Indoor** | 90° | 128 | ~50 m | Wide vertical FoV captures floors, walls, and ceilings; 128 channels produce very dense clouds in confined spaces |
+| **OS1-64 Rev6** | **Outdoor** | 45° | 64 | 170 m | Long range and finer beam collimation for large-scale mapping over tens to hundreds of metres |
+
+### `lidar_mode` — one-time persistent configuration (per sensor)
+
+| Sensor | Command | When to use |
+|--------|---------|-------------|
+| OS0-128 Rev7 | `ouster-cli source <HOSTNAME_OS0> config -p lidar_mode 2048x10` | Always — maximum resolution |
+| OS1-64 Rev6 | `ouster-cli source <HOSTNAME_OS1> config -p lidar_mode 2048x10` | Default — slow robot or mapping |
+| OS1-64 Rev6 | `ouster-cli source <HOSTNAME_OS1> config -p lidar_mode 1024x20` | Fallback — fast-moving robot |
+
+> `2048x10` is the **maximum supported mode** on both sensors. The `-p` flag makes the setting persistent across power cycles. **Run once per sensor.**
+
+### SLAM parameters
+
+| Sensor   | Environment | `lidar_mode` | Voxel size | `--min-range` | `--max-range` | Expected result                        |
+|----------|-------------|-------------|------------|---------------|---------------|----------------------------------------|
+| OS0-128  | **Indoor**  | `2048x10`   | 0.30       | 1.0 m         | 50 m          | Dense indoor reconstruction            |
+| OS0-128  | Outdoor     | `2048x10`   | 1.00       | 1.0 m         | 50 m          | Efficient short-range outdoor mapping  |
+| OS1-64   | Indoor      | `2048x10`   | 0.25       | 1.0 m         | 30 m          | High-detail mapping                    |
+| OS1-64   | **Outdoor** | `2048x10`   | 0.80       | 1.0 m         | 100 m         | Stable large-scale mapping             |
 
 > The `--min-range 1.0` baseline reflects Ouster's official guidance for bi-static LiDARs. The OS0-128 indoor `--max-range` is set to 50 m (rather than the OS1-64's 30 m) because the OS0's wider vertical FoV captures more useful long-range structure in indoor multi-room layouts.
 
